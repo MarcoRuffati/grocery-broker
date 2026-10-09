@@ -2,7 +2,7 @@
 
 ## Scope
 
-Grocery Broker is an experimental software project. The repository currently contains documentation only; references to the prototype describe prior local work, not an available hosted service or runnable release.
+Grocery Broker is an experimental software project. The repository contains a local prototype and synthetic demo, not a hosted service or a verified live offers feed.
 
 The project is independent. It does not represent, endorse or act on behalf of retailers, publishers or data providers.
 

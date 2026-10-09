@@ -4,11 +4,46 @@ A PHP and SQLite project for comparing local grocery offers and planning where t
 
 ## Project status
 
-**Development is paused. This repository currently contains documentation only.**
+**Runnable local prototype. Live data integration is paused; forks are welcome.**
 
-A local prototype was developed using PHP, SQLite, HTML, CSS and vanilla JavaScript. Preparing its code and a synthetic demo for this repository is a possible next step; neither is included yet. There is currently no installation or runnable release here.
+Built with PHP, SQLite, HTML, CSS and vanilla JavaScript, without Composer, npm or a frontend build. The repository includes the application, a synthetic demo, assisted imports and tests. The interface, product dictionary and most validation messages currently remain in Italian; documentation is in English. Currency is EUR, the timezone is Europe/Rome and postal codes use five digits. Internationalization is future work.
 
 The main obstacle is reliable offer data: there is no verified, free, documented API covering the retailers needed for the original pilot. Public pages and promotional leaflets can provide partial information, but collection requires ongoing maintenance and validation. This project does not promise comprehensive coverage or a production-ready data service.
+
+## Quick start
+
+Use a currently supported PHP release (syntax minimum: PHP 8.0) with `pdo_sqlite` and `mbstring`. Python 3 is only needed for HTTP tests. Poppler's `pdftotext` is optional for the app and required for PDF tests. No external requests are made on startup or comparison.
+
+From the repository root:
+
+```sh
+php bin/demo.php
+GROCERY_DB="$PWD/var/demo.sqlite" php -S 127.0.0.1:8788 -t public public/router.php
+```
+
+Open <http://127.0.0.1:8788>. Stop the server with Ctrl+C. Demo prices and stores are fictional. Its offers are generated for the current week; to reset the demo, stop its server, move `var/demo.sqlite` and any matching `-wal`/`-shm` files out of the way, then run the commands again. Do not reset a database containing work you want to keep.
+
+For an empty offers database with the fictional store catalogue:
+
+```sh
+php -S 127.0.0.1:8787 -t public public/router.php
+```
+
+This uses `var/grocery-broker.sqlite`. Select stores in **Supermercati**, enter a list in **La mia lista**, then choose **Confronta**. Settings (the gear button) provide CSV, textual PDF and manual imports. `pollo`, `pomodori`, `mele` and `detersivo per piatti` are example dictionary entries; generic chicken requires choosing a cut before it contributes to totals.
+
+The built-in server is for trusted local use only. Keep it bound to `127.0.0.1`; this prototype is not hardened for public hosting. Database files live outside `public/` and are ignored by Git.
+
+![Synthetic comparison](docs/demo-desktop.png)
+
+## Development
+
+```sh
+php tests/run.php
+# With the demo server above running, and its initial list unchanged:
+python3 tests/http_checks.py
+```
+
+See [architecture](docs/ARCHITECTURE.md), [connector and import guide](docs/DATA_SOURCES.md), [contributing](CONTRIBUTING.md) and [verification](docs/VERIFICATION.md).
 
 ## What the prototype explores
 
@@ -23,9 +58,9 @@ For example, a 300 g package priced at 1.50 costs 5.00 per kilogram. Buying at l
 
 ## Direction for future development
 
-Separate the comparison engine from retailer-specific data sources. A future code release should include a synthetic demo, documented connector contracts and import examples, so developers can adapt the project to their own region without depending on one live source.
+Separate the comparison engine from retailer-specific data sources. The included synthetic demo, connector interface and import examples let developers adapt the project to their own region without depending on one live source.
 
-This repository does not currently provide live offers, a public offers API, retailer credentials, third-party datasets or an automated leaflet-reading service. No retailer affiliation or endorsement is implied.
+This repository does not provide live offers, a public offers API, retailer credentials, third-party datasets or an automated leaflet-reading service. No retailer affiliation or endorsement is implied.
 
 ## Data collection and responsible use
 

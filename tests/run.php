@@ -1,0 +1,66 @@
+#!/usr/bin/env php
+<?php
+$testPath=sys_get_temp_dir().'/grocery-broker-test-'.bin2hex(random_bytes(6)).'.sqlite';putenv('GROCERY_DB='.$testPath);
+require __DIR__.'/../app/bootstrap.php';
+register_shutdown_function(function()use($testPath){foreach([$testPath,$testPath.'-wal',$testPath.'-shm'] as $p)if(is_file($p))unlink($p);});
+$tests=0;
+function check($condition,string $label): void {global $tests;$tests++;if(!$condition){fwrite(STDERR,"FAIL $label\n");exit(1);}echo "PASS $label\n";}
+function rejects(callable $fn,string $label): void {try{$fn();check(false,$label);}catch(InvalidArgumentException|RuntimeException $e){check(true,$label);}}
+function fixture(array $changes=[]): array {return validateOffer(array_merge(['chain'=>'market-a','store_id'=>'market-a-main','title'=>'Mele Gala','price'=>'1,49','pack_size'=>'500','unit'=>'g','valid_from'=>'2026-09-28','valid_to'=>'2026-10-04','url'=>'https://example.com/offer','conditions_known'=>1],$changes),'assisted');}
+$parsed=parseList("pollo 500 g\npomodori 1,5 kg\nmele\ndetersivo per piatti 750 ml");
+check(count($parsed)===4&&$parsed[0]['quantity']===.5&&$parsed[3]['quantity']===.75,'g e ml convertiti in kg e l');
+check($parsed[2]['quantity']===1&&$parsed[2]['unit']==='kg','Quantità suggerita esplicita');
+check(classify('Kebab di pollo')[1]==='preparato'&&classify('Rotolo di pollo farcito')[1]==='preparato','Preparati separati dal pollo fresco');
+check(classify('Mele biologiche')[1]==='bio','Variante biologica distinta');
+check(classify('Tonno in olio di oliva')[0]==='tonno','Tonno non scambiato per olio');
+check(classify('Affettato di petto di pollo')[1]==='preparato','Affettato escluso dal petto fresco');
+check(classify('Petto di pollo surgelato')[1]==='surgelato','Surgelato distinto');
+rejects(fn()=>parseList('mele 0 kg'),'Quantità nulla rifiutata');
+check(parseList('uova 6 pezzi')[0]['unit']==='pz'&&parseList('uova 1 confezione')[0]['unit']==='conf','Pezzi distinti dalle confezioni');
+$eggs=fixture(['title'=>'Uova','unit'=>'pz','pack_size'=>6,'price'=>'1.99']);check(quoteOffer(['quantity'=>6,'unit'=>'pz'],$eggs)['cost']===199&&quoteOffer(['quantity'=>1,'unit'=>'conf'],$eggs)['cost']===199,'Sei uova equivalgono a una confezione da sei');
+$o=fixture();check($o['pack_size']===.5&&$o['unit']==='kg'&&$o['price_cents']===149,'Prezzo euro e formato normalizzati');
+$q=quoteOffer(['quantity'=>1,'unit'=>'kg'],$o);check($q['cost']===298&&$q['packs']===2&&$q['unit_price']===298,'Due confezioni e prezzo al kg');
+$q=quoteOffer(['quantity'=>1,'unit'=>'kg'],fixture(['pack_size'=>300,'price'=>'1.49']));check($q['cost']===596&&abs($q['bought']-1.2)<.00001&&$q['packs']===4,'Arrotondamento a quattro confezioni da 300g');
+$q=quoteOffer(['quantity'=>.75,'unit'=>'kg'],fixture(['pack_size'=>1,'unit'=>'kg','price'=>'1.99','loose'=>1]));check($q['cost']===149&&$q['estimated_weight']===true,'Peso variabile e arrotondamento monetario');
+$q=quoteOffer(['quantity'=>1,'unit'=>'l'],fixture(['title'=>'Detersivo per piatti','pack_size'=>750,'unit'=>'ml','price'=>'1.29']));check($q['cost']===258&&$q['unit_price']===172,'Litri normalizzati e confezioni indivisibili');
+check(quoteOffer(['quantity'=>1,'unit'=>'kg'],fixture(['unit'=>'l','pack_size'=>1]))===null,'Nessuna conversione massa-volume');
+check(quoteOffer(['quantity'=>1,'unit'=>'conf'],fixture(['min_packs'=>2]))===null,'Promo minima esclusa sotto soglia');
+check(quoteOffer(['quantity'=>2,'unit'=>'conf'],fixture(['min_packs'=>2]))['cost']===298,'Promo minima applicata alla soglia');
+rejects(fn()=>fixture(['valid_to'=>'2026-02-30']),'Date impossibili rifiutate');
+rejects(fn()=>fixture(['valid_from'=>'2026-10-05']),'Intervallo invertito rifiutato');
+rejects(fn()=>fixture(['url'=>'javascript:alert(1)']),'URL attivi rifiutati');
+rejects(fn()=>fixture(['store_id'=>'market-c-main']),'Ambito di negozio incoerente rifiutato');
+rejects(fn()=>fixture(['price'=>'1,234']),'Prezzo ambiguo rifiutato');
+$db=db();$db->exec("UPDATE stores SET favorite=1 WHERE id IN ('market-a-main','market-b-main')");
+saveList(parseList("mele 1 kg\npomodori 1 kg\ndetersivo per piatti 1 l"));
+persistOffers([fixture(),fixture(['title'=>'Pomodori','price'=>'0.10','valid_from'=>'2026-09-01','valid_to'=>'2026-09-20']),fixture(['title'=>'Detersivo per piatti','unit'=>'l','pack_size'=>1,'price'=>'1.00','loyalty'=>1])]);
+$c=comparison('2026-09-28');check($c['covered']===1&&$c['total']===298&&!$c['complete'],'Scadute e fedeltà escluse, subtotale incompleto');
+$db->exec("UPDATE stores SET loyalty=1 WHERE id='market-a-main'");$c=comparison('2026-09-28');check($c['covered']===2&&$c['total']===398,'Tessera abilita offerta fedeltà');
+persistOffers([fixture(['title'=>'Pomodori','price'=>'1.00','conditions_known'=>0])]);check(comparison('2026-09-28')['covered']===2,'Condizioni sconosciute escluse');
+persistOffers([fixture(['title'=>'Pomodori','price'=>'1.00','valid_from'=>'2026-10-01'])]);check(comparison('2026-09-28')['covered']===2,'Offerte future escluse');
+$count=(int)$db->query('SELECT COUNT(*) FROM offers')->fetchColumn();persistOffers([fixture()]);check((int)$db->query('SELECT COUNT(*) FROM offers')->fetchColumn()===$count,'Importazione idempotente');
+persistOffers([fixture(['price'=>'1.20'])]);check((int)$db->query("SELECT price_cents FROM offers WHERE title='Mele Gala'")->fetchColumn()===120,'Prezzo corretto sostituisce il vecchio');
+$count=(int)$db->query('SELECT COUNT(*) FROM offers')->fetchColumn();rejects(fn()=>importRows([['title'=>'Mele','price'=>'1'],['title'=>'','price'=>'2']]),'Batch invalido rifiutato');check((int)$db->query('SELECT COUNT(*) FROM offers')->fetchColumn()===$count,'Batch fallito conserva i dati');
+$raw=parseList('pollo');saveList($raw);persistOffers([fixture(['title'=>'Petto di pollo','price'=>'4.99','pack_size'=>1,'unit'=>'kg']),fixture(['title'=>'Kebab di pollo','price'=>'0.10','pack_size'=>1,'unit'=>'kg'])]);$c=comparison('2026-09-28');check($c['rows'][0]['ambiguous']&&$c['covered']===0,'Pollo generico richiede scelta del taglio');
+$raw[0]['variant']='*';saveList($raw);$c=comparison('2026-09-28');check($c['total']===499&&$c['complete'],'Qualsiasi taglio fresco esclude kebab');
+$real=[fixture(['price_cents'=>219,'pack_size'=>2,'unit'=>'kg']), fixture(['title'=>'Pere','price'=>'2.10'])];
+foreach($real as &$offer){$offer['origin']='automatic';$offer['fingerprint']=hash('sha256',$offer['fingerprint'].'automatic');}unset($offer);
+persistOffers($real,'market-a');$first=(int)$db->query("SELECT COUNT(*) FROM offers WHERE origin='automatic'")->fetchColumn();persistOffers($real,'market-a');check((int)$db->query("SELECT COUNT(*) FROM offers WHERE origin='automatic'")->fetchColumn()===$first,'Snapshot automatico ripetuto non duplica');
+persistOffers([$real[0]],'market-a');check((int)$db->query("SELECT COUNT(*) FROM offers WHERE origin='automatic'")->fetchColumn()===1,'Snapshot riuscito rimuove automatiche ritirate');
+check((int)$db->query("SELECT COUNT(*) FROM offers WHERE origin='assisted'")->fetchColumn()>0,'Snapshot preserva importazioni assistite');
+check(str_contains(pdfText(__DIR__.'/fixtures/text.pdf'),'Mele Golden'),'PDF testuale estratto per revisione');
+rejects(fn()=>pdfText(__DIR__.'/fixtures/empty.pdf'),'PDF senza testo non produce offerte');
+$csv="title;price;pack_size;unit;valid_from;valid_to;url\n\"Mele; Golden\";1,49;1;kg;2026-09-28;2026-10-04;https://example.com/offer\n";
+check(previewCsv($csv)[0]['title']==='Mele; Golden','CSV con separatore nel campo quotato');
+rejects(fn()=>previewCsv("title;price\nMele;1;extra"),'CSV colonne incoerenti rifiutato');
+saveList(parseList("mele 1 kg\nmele 1 kg"));$dup=db()->query('SELECT * FROM list_items')->fetchAll();check(count($dup)===1&&(float)$dup[0]['quantity']===2.0,'Righe duplicate sommate prima di calcolare le confezioni');
+setSetting('caps',['33080','33170']);check(setting('caps')===['33080','33170'],'Preferenze SQLite persistenti');
+check(syncSources(true)['unconfigured']===true,'Unconfigured collectors do not make network requests');
+$before=(int)$db->query('SELECT COUNT(*) FROM offers')->fetchColumn();
+$failed=new class implements Connector {public function collect(): array {throw new RuntimeException('Simulated failure');}};
+$r=syncSources(true,['market-a'=>$failed]);
+check($r[0]['status']==='error'&&(int)$db->query('SELECT COUNT(*) FROM offers')->fetchColumn()===$before,'Failed collection preserves offers');
+$empty=new class implements Connector {public function collect(): array {return [];}};
+check(syncSources(true,['market-a'=>$empty])[0]['status']==='error','Empty snapshot is not a success');
+setSetting('demo',true);rejects(fn()=>syncSources(true),'Demo blocks collector execution');
+echo "\n$tests verifiche superate. Database reale non modificato.\n";
